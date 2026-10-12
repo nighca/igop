@@ -233,17 +233,39 @@ func (p *function) deleteFrame(caller *frame, fr *frame) {
 
 // planCleanup selects slots to clear and reusable locals to zero.
 // Templates are kept; callers copy results out before their slots are cleared.
+// Slots that cannot hold pointers are left dirty: the next call overwrites
+// them, and leftover basic values do not keep heap objects alive.
+//
+// Result slots [0, nres) are written by Return and are not in p.index.
+// Params and free vars are registered in p.index before initPool, so the
+// index loop classifies them.
 func (p *function) planCleanup() {
 	keep := make([]bool, len(p.stack))
+	if res := p.Fn.Signature.Results(); res != nil {
+		for i := 0; i < res.Len(); i++ {
+			if !typesMayRef(res.At(i).Type()) {
+				keep[i] = true
+			}
+		}
+	}
 	for v, encoded := range p.index {
 		reg := register(encoded & 0xffffff)
+		if v == nil {
+			continue
+		}
 		if kind(encoded >> 30).isStatic() {
 			keep[reg] = true
-		} else if alloc, ok := v.(*ssa.Alloc); ok && !alloc.Heap {
+			continue
+		}
+		if alloc, ok := v.(*ssa.Alloc); ok && !alloc.Heap {
 			keep[reg] = true
 			if hasRefs(p.Interp.preToType(alloc.Type()).Elem()) {
 				p.localRefs = append(p.localRefs, reg)
 			}
+			continue
+		}
+		if !typesMayRef(v.Type()) {
+			keep[reg] = true
 		}
 	}
 	for i := 0; i < len(keep); {
@@ -256,6 +278,38 @@ func (p *function) planCleanup() {
 			i++
 		}
 		p.clearRanges = append(p.clearRanges, stackRange{register(start), register(i)})
+	}
+}
+
+// typesMayRef reports whether a SSA type can hold a heap reference.
+// Nil and unhandled types are treated as references. Interpreter tuples
+// are slices, so a Tuple always counts as a reference.
+func typesMayRef(t types.Type) bool {
+	if t == nil {
+		return true
+	}
+	switch t := t.Underlying().(type) {
+	case *types.Basic:
+		switch t.Kind() {
+		case types.String, types.UnsafePointer:
+			return true
+		}
+		return false
+	case *types.Pointer, *types.Map, *types.Chan, *types.Slice, *types.Signature, *types.Interface:
+		return true
+	case *types.Array:
+		return t.Len() != 0 && typesMayRef(t.Elem())
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if typesMayRef(t.Field(i).Type()) {
+				return true
+			}
+		}
+		return false
+	case *types.Tuple:
+		return true
+	default:
+		return true
 	}
 }
 

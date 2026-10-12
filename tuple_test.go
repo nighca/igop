@@ -17,6 +17,8 @@
 package ixgo
 
 import (
+	"go/token"
+	"go/types"
 	"reflect"
 	"strings"
 	"sync"
@@ -137,6 +139,70 @@ func TestFrameCleanup(t *testing.T) {
 			if v != nil {
 				t.Errorf("call %d: phi scratch retained %T", call, v)
 			}
+		}
+	}
+}
+
+func TestFrameSkipNonRefClear(t *testing.T) {
+	interp := loadFrame(t, 0)
+	p := interp.funcs[interp.mainpkg.Func("Add")]
+	argReg := p.regIndex(p.Fn.Params[0])
+	var active *frame
+	first := p.Instrs[0]
+	p.Instrs[0] = func(fr *frame) {
+		active = fr
+		first(fr)
+	}
+	if got := runFrame(t, interp, "Add", 11); got != 11 {
+		t.Fatalf("Add(11) = %v", got)
+	}
+	if got := runFrame(t, interp, "Add", 22); got != 22 {
+		t.Fatalf("Add(22) = %v", got)
+	}
+	if active == nil {
+		t.Fatal("frame not captured")
+	}
+	if active.stack[0] != 22 {
+		t.Errorf("int result slot cleared, got %v", active.stack[0])
+	}
+	if active.stack[argReg] != 22 {
+		t.Errorf("int arg slot cleared, got %v", active.stack[argReg])
+	}
+}
+
+func TestTypesMayRef(t *testing.T) {
+	intVar := types.NewVar(token.NoPos, nil, "", types.Typ[types.Int])
+	strField := types.NewVar(token.NoPos, nil, "s", types.Typ[types.String])
+	intField := types.NewVar(token.NoPos, nil, "n", types.Typ[types.Int])
+	namedInt := types.NewNamed(types.NewTypeName(token.NoPos, nil, "N", nil), types.Typ[types.Int], nil)
+	cases := []struct {
+		typ  types.Type
+		want bool
+	}{
+		{nil, true},
+		{types.Typ[types.Int], false},
+		{types.Typ[types.Bool], false},
+		{types.Typ[types.Float64], false},
+		{types.Typ[types.Complex128], false},
+		{namedInt, false},
+		{types.Typ[types.String], true},
+		{types.Typ[types.UnsafePointer], true},
+		{types.NewPointer(types.Typ[types.Int]), true},
+		{types.NewSlice(types.Typ[types.Int]), true},
+		{types.NewMap(types.Typ[types.Int], types.Typ[types.Int]), true},
+		{types.NewChan(types.SendRecv, types.Typ[types.Int]), true},
+		{types.NewSignatureType(nil, nil, nil, nil, nil, false), true},
+		{types.NewInterfaceType(nil, nil), true},
+		{types.NewArray(types.Typ[types.Int], 0), false},
+		{types.NewArray(types.NewPointer(types.Typ[types.Int]), 1), true},
+		{types.NewStruct([]*types.Var{intField}, nil), false},
+		{types.NewStruct([]*types.Var{strField}, nil), true},
+		{types.NewTuple(intVar), true},
+		{types.NewTypeParam(types.NewTypeName(token.NoPos, nil, "T", nil), types.NewInterfaceType(nil, nil)), true},
+	}
+	for _, test := range cases {
+		if got := typesMayRef(test.typ); got != test.want {
+			t.Errorf("typesMayRef(%v) = %v, want %v", test.typ, got, test.want)
 		}
 	}
 }
