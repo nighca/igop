@@ -235,28 +235,18 @@ func (p *function) deleteFrame(caller *frame, fr *frame) {
 // Templates are kept; callers copy results out before their slots are cleared.
 // Slots that cannot hold pointers are left dirty: the next call overwrites
 // them, and leftover basic values do not keep heap objects alive.
+//
+// Result slots [0, nres) are written by Return and are not in p.index.
+// Params and free vars are registered in p.index before initPool, so the
+// index loop classifies them.
 func (p *function) planCleanup() {
 	keep := make([]bool, len(p.stack))
-	off := 0
 	if res := p.Fn.Signature.Results(); res != nil {
 		for i := 0; i < res.Len(); i++ {
-			if off < len(keep) && !typesMayRef(res.At(i).Type()) {
-				keep[off] = true
+			if !typesMayRef(res.At(i).Type()) {
+				keep[i] = true
 			}
-			off++
 		}
-	}
-	for _, param := range p.Fn.Params {
-		if off < len(keep) && !typesMayRef(param.Type()) {
-			keep[off] = true
-		}
-		off++
-	}
-	for _, fv := range p.Fn.FreeVars {
-		if off < len(keep) && !typesMayRef(fv.Type()) {
-			keep[off] = true
-		}
-		off++
 	}
 	for v, encoded := range p.index {
 		reg := register(encoded & 0xffffff)
@@ -292,7 +282,8 @@ func (p *function) planCleanup() {
 }
 
 // typesMayRef reports whether a SSA type can hold a heap reference.
-// Interpreter tuples are slices, so a Tuple always counts as a reference.
+// Nil and unhandled types are treated as references. Interpreter tuples
+// are slices, so a Tuple always counts as a reference.
 func typesMayRef(t types.Type) bool {
 	if t == nil {
 		return true
