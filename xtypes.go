@@ -179,18 +179,19 @@ type FindMethod interface {
 }
 
 type TypesRecord struct {
-	ctx     *Context
-	rctx    *reflectx.Context // reflectx context
-	prog    *ssa.Program
-	loader  Loader
-	finder  FindMethod
-	rcache  map[reflect.Type]types.Type
-	tcache  *typeutil.Map
-	ncache  *typeutil.Map //nested cache
-	fntargs string        //reflect type arguments used to instantiate the current func
-	nested  map[*types.Named]int
-	nstack  nestedStack
-	ninst   int // nested instance counter
+	ctx       *Context
+	rctx      *reflectx.Context // reflectx context
+	prog      *ssa.Program
+	loader    Loader
+	finder    FindMethod
+	rcache    map[reflect.Type]types.Type
+	tcache    *typeutil.Map
+	ncache    *typeutil.Map //nested cache
+	fntargs   string        //reflect type arguments used to instantiate the current func
+	nested    map[*types.Named]int
+	nestedPos map[token.Pos]int // defining Pos -> nested index
+	nstack    nestedStack
+	ninst     int // nested instance counter
 }
 
 type mfnKey struct {
@@ -241,18 +242,28 @@ func (r *TypesRecord) Release() {
 	r.ncache = nil
 	r.finder = nil
 	r.nested = nil
+	r.nestedPos = nil
 }
 
 func NewTypesRecord(ctx *Context, rctx *reflectx.Context, prog *ssa.Program, loader Loader, finder FindMethod, nested map[*types.Named]int) *TypesRecord {
+	nestedPos := make(map[token.Pos]int, len(nested))
+	for named, n := range nested {
+		if named == nil || named.Obj() == nil {
+			continue
+		}
+		// Each type spec has a distinct Pos; last write wins if they collide.
+		nestedPos[named.Obj().Pos()] = n
+	}
 	return &TypesRecord{
-		ctx:    ctx,
-		rctx:   rctx,
-		prog:   prog,
-		loader: loader,
-		finder: finder,
-		rcache: make(map[reflect.Type]types.Type),
-		tcache: &typeutil.Map{},
-		nested: nested,
+		ctx:       ctx,
+		rctx:      rctx,
+		prog:      prog,
+		loader:    loader,
+		finder:    finder,
+		rcache:    make(map[reflect.Type]types.Type),
+		tcache:    &typeutil.Map{},
+		nested:    nested,
+		nestedPos: nestedPos,
 	}
 }
 

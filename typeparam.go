@@ -66,6 +66,39 @@ func (s *nestedStack) Pop() (targs string, cache *typeutil.Map) {
 	return
 }
 
+// nestedIndex returns the unique index of a type defined inside a function.
+// Instantiations of generic functions clone inner Named types, so pointer
+// identity of Origin() does not match the syntax objects stored in nested.
+// Fall back to the defining position of the origin object.
+func (r *TypesRecord) nestedIndex(named *types.Named) int {
+	if named == nil || r.nested == nil {
+		return 0
+	}
+	orig := named.Origin()
+	if n := r.nested[orig]; n != 0 {
+		return n
+	}
+	if orig != named {
+		if n := r.nested[named]; n != 0 {
+			return n
+		}
+	}
+	obj := orig.Obj()
+	if obj == nil || obj.Pkg() == nil || obj.Parent() == obj.Pkg().Scope() {
+		return 0
+	}
+	pos := obj.Pos()
+	if !pos.IsValid() {
+		return 0
+	}
+	// Each type spec has a distinct Pos. Clones from generic instantiation
+	// share that Pos; nestedPos is built from nested in NewTypesRecord.
+	if r.nestedPos != nil {
+		return r.nestedPos[pos]
+	}
+	return 0
+}
+
 func (r *TypesRecord) typeId(typ types.Type, t reflect.Type) string {
 	path := t.PkgPath()
 	if path == "" {
@@ -73,7 +106,7 @@ func (r *TypesRecord) typeId(typ types.Type, t reflect.Type) string {
 	}
 	name := path + "." + t.Name()
 	if named, ok := typ.(*types.Named); ok {
-		if n := r.nested[named.Origin()]; n != 0 {
+		if n := r.nestedIndex(named); n != 0 {
 			name += "·" + strconv.Itoa(n)
 		}
 	}
@@ -119,7 +152,7 @@ func (r *TypesRecord) extractNamed(named *types.Named, totype bool) (pkgpath str
 			pkgpath = pkg.Path()
 		}
 	}
-	if r.fntargs != "" && r.nested[named.Origin()] != 0 {
+	if r.fntargs != "" && r.nestedIndex(named) != 0 {
 		nested = true
 	}
 	name = obj.Name()

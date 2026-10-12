@@ -569,6 +569,77 @@ func main() {
 	}
 }
 
+func TestNestedGenericTypeString(t *testing.T) {
+	src := `package main
+
+import "reflect"
+
+type intish interface{ ~int }
+
+func F[A intish]() {
+	type T[B intish] struct{}
+	type U[_ any] int
+	got := reflect.TypeOf(T[U[int]]{}).String()
+	want := "main.T[int;main.U[int;int]·2]"
+	if got != want {
+		panic(got)
+	}
+}
+
+func main() { F[int]() }
+`
+	if _, err := ixgo.RunFile("main.go", src, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNestedLocalTypeString(t *testing.T) {
+	src := `package main
+
+import "reflect"
+
+func local() {
+	type U int
+	type T[B any] struct{}
+	got := reflect.TypeOf(T[U]{}).String()
+	want := "main.T[main.U·1]"
+	if got != want {
+		panic(got)
+	}
+}
+
+func main() { local() }
+`
+	if _, err := ixgo.RunFile("main.go", src, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPackageNamedTypeString(t *testing.T) {
+	src := `package main
+
+import (
+	"path/filepath"
+	"reflect"
+)
+
+type N int
+type _Nil[a any, b any] struct{}
+
+func main() {
+	var v _Nil[filepath.WalkFunc, _Nil[int, N]]
+	got := reflect.TypeOf(v).String()
+	want := "main._Nil[path/filepath.WalkFunc,main._Nil[int,main.N]]"
+	if got != want {
+		panic(got)
+	}
+}
+`
+	if _, err := ixgo.RunFile("main.go", src, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExpGCCapturedClosure(t *testing.T) {
 	src := `package main
 

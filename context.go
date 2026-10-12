@@ -1064,10 +1064,18 @@ func (ctx *Context) checkNested(pkg *types.Package, info *types.Info) {
 		switch k.(type) {
 		case *ast.BlockStmt, *ast.FuncType:
 			for _, name := range v.Names() {
-				obj := v.Lookup(name)
-				if named, ok := obj.Type().(*types.Named); ok && named.Obj().Pkg() == pkg {
-					nestedList = append(nestedList, named)
+				tn, ok := v.Lookup(name).(*types.TypeName)
+				if !ok {
+					continue
 				}
+				named, ok := tn.Type().(*types.Named)
+				// Skip package-scope TypeNames. Lookup used to take any object's
+				// type, so a function-local var of a package-level named type
+				// (var v _Nil[int, N]) was recorded and leaked ·N onto that type.
+				if !ok || named.Obj().Pkg() != pkg || tn.Parent() == pkg.Scope() {
+					continue
+				}
+				nestedList = append(nestedList, named)
 			}
 		}
 	}
