@@ -82,16 +82,12 @@ func (r *TypesRecord) nestedIndex(named *types.Named) int {
 	if obj == nil || obj.Pkg() == nil || obj.Parent() == obj.Pkg().Scope() {
 		return 0
 	}
-	pos := obj.Pos()
-	if !pos.IsValid() {
+	if r.nestedPos == nil {
 		return 0
 	}
-	// Each type spec has a distinct Pos. Clones from generic instantiation
-	// share that Pos; nestedPos is built from nested in NewTypesRecord.
-	if r.nestedPos != nil {
-		return r.nestedPos[pos]
-	}
-	return 0
+	// token.NoPos is 0; missing keys also yield 0. Type specs have distinct
+	// Pos, and clones share the origin spec's Pos.
+	return r.nestedPos[obj.Pos()]
 }
 
 func (r *TypesRecord) typeId(typ types.Type, t reflect.Type) string {
