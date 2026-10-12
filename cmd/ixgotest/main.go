@@ -64,11 +64,7 @@ func init() {
 		gorootTestSkips["abi/uglyfib.go"] = "5m48s"
 		// gorootTestSkips["fixedbugs/issue23017.go"] = "BUG" //fixed https://github.com/golang/go/issues/55086
 
-		gorootTestSkips["typeparam/chans.go"] = "runtime.SetFinalizer, maybe broken for go1.18 on linux workflows"
 		// gorootTestSkips["typeparam/issue376214.go"] = "build SSA package error: variadic parameter must be of unnamed slice type"
-		if ver != 20 {
-			gorootTestSkips["typeparam/nested.go"] = "skip, run pass but output same as go1.20"
-		}
 		//go1.20
 		gorootTestSkips["fixedbugs/bug514.go"] = "skip cgo"
 		gorootTestSkips["fixedbugs/issue40954.go"] = "skip cgo"
