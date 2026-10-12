@@ -82,11 +82,8 @@ func (r *TypesRecord) nestedIndex(named *types.Named) int {
 	if obj == nil || obj.Pkg() == nil || obj.Parent() == obj.Pkg().Scope() {
 		return 0
 	}
-	if r.nestedPos == nil {
-		return 0
-	}
-	// token.NoPos is 0; missing keys also yield 0. Type specs have distinct
-	// Pos, and clones share the origin spec's Pos.
+	// token.NoPos and missing keys yield 0; a nil map is safe to read.
+	// Type specs have distinct Pos; clones share the origin spec's Pos.
 	return r.nestedPos[obj.Pos()]
 }
 
