@@ -648,7 +648,7 @@ func BenchmarkDirectCall(b *testing.B) {
 	b.Run("reflect", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			interp.callExternalByStack(fr, fnValue, 2, ia)
+			interp.callExternalByStack(fr, fnValue, 2, ia, nil)
 		}
 	})
 
@@ -673,12 +673,12 @@ func BenchmarkDirectCall(b *testing.B) {
 			interp.invokeDirectCall(fr, adapter, 1, methodArgs)
 			return
 		}
-		interp.callExternalByStack(fr, ext, 1, methodArgs)
+		interp.callExternalByStack(fr, ext, 1, methodArgs, nil)
 	}
 
 	b.Run("dynamic_direct", func(b *testing.B) {
 		b.Run("cached", func(b *testing.B) {
-			call := makeCallMethodInstr(interp, nil, methodCall, 1, 0, nil)
+			call := makeCallMethodInstr(interp, nil, methodCall, 1, 0, nil, nil)
 			b.ReportAllocs()
 			for b.Loop() {
 				call(methodFrame)
@@ -695,7 +695,7 @@ func BenchmarkDirectCall(b *testing.B) {
 	fallbackFrame := &frame{stack: []value{&fallback, nil}}
 	b.Run("dynamic_fallback", func(b *testing.B) {
 		b.Run("cached", func(b *testing.B) {
-			call := makeCallMethodInstr(interp, nil, methodCall, 1, 0, nil)
+			call := makeCallMethodInstr(interp, nil, methodCall, 1, 0, nil, nil)
 			b.ReportAllocs()
 			for b.Loop() {
 				call(fallbackFrame)

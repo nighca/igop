@@ -132,10 +132,11 @@ type function struct {
 	clearRanges []stackRange // slots cleared before pooling
 	localRefs   []register   // non-escaping locals holding references
 
-	hasGCRegs     bool // function has dynamic GC-relevant registers
-	hasRunDefers  bool // function SSA contains RunDefers
-	hasDeferStack bool // function emits ssa:deferstack
-	needInject    bool // yield pushed a Defer onto this function's deferstack
+	hasGCRegs     bool                      // function has dynamic GC-relevant registers
+	hasRunDefers  bool                      // function SSA contains RunDefers
+	hasDeferStack bool                      // function emits ssa:deferstack
+	needInject    bool                      // yield pushed a Defer onto this function's deferstack
+	elidedExtract map[*ssa.Extract]struct{} // Extracts skipped after dests write
 }
 
 // closureCapture is one MakeClosure: its result register and captured
@@ -159,6 +160,7 @@ func (p *function) UnsafeRelease() {
 	p.gcReady = nil
 	p.closureCaptures = nil
 	p.closureByResult = nil
+	p.elidedExtract = nil
 	p.Instrs = nil
 	p.Recover = nil
 	p.Blocks = nil
@@ -1028,6 +1030,11 @@ func makeInstr(interp *Interp, pfn *function, instr ssa.Instruction) func(fr *fr
 			fr.setReg(ir, typeAssert(fr, instr, typ, xtyp, v))
 		}
 	case *ssa.Extract:
+		if pfn.elidedExtract != nil {
+			if _, ok := pfn.elidedExtract[instr]; ok {
+				return nil
+			}
+		}
 		if *instr.Referrers() == nil {
 			return nil
 		}
@@ -1294,15 +1301,78 @@ var (
 	typFramePtr = reflect.TypeOf((*frame)(nil))
 )
 
+func callResultCount(call *ssa.CallCommon) int {
+	sig := call.Signature()
+	if sig == nil {
+		return 0
+	}
+	if res := sig.Results(); res != nil {
+		return res.Len()
+	}
+	return 0
+}
+
+// elideCallExtracts maps a multi-result Call to Extract destination registers
+// so the callee can write results without allocating a tuple. Returns nil when
+// there is nothing to elide: a zero/single-result call, a call whose results
+// are all discarded, or a call whose result is consumed as a whole tuple.
+func elideCallExtracts(pfn *function, instr ssa.Value, nres int) []register {
+	if nres <= 1 {
+		return nil
+	}
+	refs := instr.Referrers()
+	dests := make([]register, nres)
+	for i := range dests {
+		dests[i] = -1
+	}
+	if refs != nil {
+		for _, ref := range *refs {
+			switch ex := ref.(type) {
+			case *ssa.Extract:
+				if ex.Referrers() != nil && len(*ex.Referrers()) > 0 {
+					dests[ex.Index] = pfn.regIndex(ex)
+				}
+			case *ssa.DebugRef:
+				continue
+			default:
+				return nil
+			}
+		}
+	}
+	used := false
+	for _, d := range dests {
+		if d >= 0 {
+			used = true
+			break
+		}
+	}
+	if !used {
+		return nil
+	}
+	if refs != nil {
+		if pfn.elidedExtract == nil {
+			pfn.elidedExtract = make(map[*ssa.Extract]struct{})
+		}
+		for _, ref := range *refs {
+			if ex, ok := ref.(*ssa.Extract); ok {
+				pfn.elidedExtract[ex] = struct{}{}
+			}
+		}
+	}
+	return dests
+}
+
 func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.CallCommon) func(fr *frame) {
 	ir := pfn.regIndex(instr)
 	iv, ia, ib := getCallIndex(pfn, call)
+	nres := callResultCount(call)
 	switch fn := call.Value.(type) {
 	case *ssa.Builtin:
 		return interp.makeBuiltinByStack(pfn, fn, call.Args, ir, ia)
 	case *ssa.MakeClosure:
 		ifn := interp.loadFunction(fn.Fn.(*ssa.Function))
 		ia = append(ia, ib...)
+		dests := elideCallExtracts(pfn, instr, ifn.nres)
 		if ifn.Recover == nil {
 			switch ifn.nres {
 			case 0:
@@ -1315,7 +1385,7 @@ func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.Cal
 				}
 			default:
 				return func(fr *frame) {
-					interp.callFunctionByStackNoRecoverN(fr, ifn, ir, ia)
+					interp.callFunctionByStackNoRecoverN(fr, ifn, ir, ia, dests)
 				}
 			}
 		}
@@ -1330,7 +1400,7 @@ func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.Cal
 			}
 		default:
 			return func(fr *frame) {
-				interp.callFunctionByStackN(fr, ifn, ir, ia)
+				interp.callFunctionByStackN(fr, ifn, ir, ia, dests)
 			}
 		}
 	case *ssa.Function:
@@ -1339,6 +1409,7 @@ func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.Cal
 			return run
 		}
 		if fn.Blocks == nil {
+			dests := elideCallExtracts(pfn, instr, nres)
 			ext, ok := findExternFunc(interp, fn)
 			if !ok {
 				// skip pkg.init
@@ -1349,14 +1420,15 @@ func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.Cal
 			}
 			if typ := ext.Type(); typ.NumIn() > 0 && typ.In(0) == typFramePtr {
 				return func(fr *frame) {
-					interp.callExternalWithFrameByStack(fr, ext, ir, ia)
+					interp.callExternalWithFrameByStack(fr, ext, ir, ia, dests)
 				}
 			}
 			return func(fr *frame) {
-				interp.callExternalByStack(fr, ext, ir, ia)
+				interp.callExternalByStack(fr, ext, ir, ia, dests)
 			}
 		}
 		ifn := interp.loadFunction(fn)
+		dests := elideCallExtracts(pfn, instr, ifn.nres)
 		if ifn.Recover == nil {
 			switch ifn.nres {
 			case 0:
@@ -1369,7 +1441,7 @@ func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.Cal
 				}
 			default:
 				return func(fr *frame) {
-					interp.callFunctionByStackNoRecoverN(fr, ifn, ir, ia)
+					interp.callFunctionByStackNoRecoverN(fr, ifn, ir, ia, dests)
 				}
 			}
 		}
@@ -1384,13 +1456,14 @@ func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.Cal
 			}
 		default:
 			return func(fr *frame) {
-				interp.callFunctionByStackN(fr, ifn, ir, ia)
+				interp.callFunctionByStackN(fr, ifn, ir, ia, dests)
 			}
 		}
 	}
+	dests := elideCallExtracts(pfn, instr, nres)
 	// "dynamic method call" // ("invoke" mode)
 	if call.IsInvoke() {
-		return makeCallMethodInstr(interp, instr, call, ir, iv, ia)
+		return makeCallMethodInstr(interp, instr, call, ir, iv, ia, dests)
 	}
 	// dynamic func call
 	typ := interp.preToType(call.Value.Type())
@@ -1398,12 +1471,12 @@ func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.Cal
 		panic("unsupport")
 	}
 	if supportFuncVal && (interp.ctx.Mode&DisableDynamicFuncCallAnalysis == 0) {
-		return dynamicFunCall(interp, iv, ir, ia)
+		return dynamicFunCall(interp, iv, ir, ia, dests)
 	}
 	return func(fr *frame) {
 		fn := fr.reg(iv)
 		v := reflect.ValueOf(fn)
-		interp.callExternalByStack(fr, v, ir, ia)
+		interp.callExternalByStack(fr, v, ir, ia, dests)
 	}
 }
 
@@ -1442,7 +1515,7 @@ func (i *Interp) findMethod(typ reflect.Type, mname string) (fn *ssa.Function, o
 	return
 }
 
-func makeCallMethodInstr(interp *Interp, instr ssa.Value, call *ssa.CallCommon, ir register, iv register, ia []register) func(fr *frame) {
+func makeCallMethodInstr(interp *Interp, instr ssa.Value, call *ssa.CallCommon, ir register, iv register, ia []register, dests []register) func(fr *frame) {
 	mname := call.Method.Name()
 	ia = append([]register{iv}, ia...)
 	var methods sync.Map // map[reflect.Type]func(*frame)
@@ -1463,7 +1536,7 @@ func makeCallMethodInstr(interp *Interp, instr ssa.Value, call *ssa.CallCommon, 
 			if fn, ok := mset[mname]; ok {
 				ifn := interp.funcs[fn]
 				method = func(fr *frame) {
-					interp.callFunctionByStack(fr, ifn, ir, ia)
+					interp.callFunctionByStack(fr, ifn, ir, ia, dests)
 				}
 			} else {
 				ext, found := findUserMethod(rtype, mname)
@@ -1471,7 +1544,7 @@ func makeCallMethodInstr(interp *Interp, instr ssa.Value, call *ssa.CallCommon, 
 					panic(fr.plainError(instr, fmt.Sprintf("no code for method: %v.%v", rtype, mname)))
 				}
 				method = func(fr *frame) {
-					interp.callExternalByStack(fr, ext, ir, ia)
+					interp.callExternalByStack(fr, ext, ir, ia, dests)
 				}
 			}
 		} else {
@@ -1485,7 +1558,7 @@ func makeCallMethodInstr(interp *Interp, instr ssa.Value, call *ssa.CallCommon, 
 				}
 			} else {
 				method = func(fr *frame) {
-					interp.callExternalByStack(fr, ext, ir, ia)
+					interp.callExternalByStack(fr, ext, ir, ia, dests)
 				}
 			}
 		}

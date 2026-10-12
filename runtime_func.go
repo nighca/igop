@@ -81,19 +81,19 @@ func runtimeFuncFileLine(fr *frame, f *runtime.Func, pc uintptr) (file string, l
 
 const supportFuncVal = funcval.IsSupport
 
-func dynamicFunCall(interp *Interp, iv register, ir register, ia []register) func(fr *frame) {
+func dynamicFunCall(interp *Interp, iv register, ir register, ia []register, dests []register) func(fr *frame) {
 	return func(fr *frame) {
 		fn := fr.reg(iv)
 		if c := interp.getMakeFuncVal(fn); c != nil && c.interp == interp {
 			if c.pfn.Recover == nil {
-				interp.callFunctionByStackNoRecoverWithEnv(fr, c.pfn, ir, ia, c.env)
+				interp.callFunctionByStackNoRecoverWithEnv(fr, c.pfn, ir, ia, c.env, dests)
 			} else {
-				interp.callFunctionByStackWithEnv(fr, c.pfn, ir, ia, c.env)
+				interp.callFunctionByStackWithEnv(fr, c.pfn, ir, ia, c.env, dests)
 			}
 			return
 		}
 		v := reflect.ValueOf(fn)
-		interp.callExternalByStack(fr, v, ir, ia)
+		interp.callExternalByStack(fr, v, ir, ia, dests)
 	}
 }
 
