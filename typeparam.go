@@ -78,11 +78,6 @@ func (r *TypesRecord) nestedIndex(named *types.Named) int {
 	if n := r.nested[orig]; n != 0 {
 		return n
 	}
-	if orig != named {
-		if n := r.nested[named]; n != 0 {
-			return n
-		}
-	}
 	obj := orig.Obj()
 	if obj == nil || obj.Pkg() == nil || obj.Parent() == obj.Pkg().Scope() {
 		return 0
