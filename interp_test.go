@@ -569,6 +569,100 @@ func main() {
 	}
 }
 
+func TestMultiResultCall(t *testing.T) {
+	src := `package main
+
+func pair(x int) (int, int) {
+	return x, x + 1
+}
+
+func fib(x int) (int, int) {
+	if x < 3 {
+		return 0, x
+	}
+	a, b := fib(x - 2)
+	c, d := fib(x - 1)
+	return a + d, b + c
+}
+
+func unused() (int, int) {
+	return 7, 8
+}
+
+func rec() (int, int) {
+	if recover() != nil {
+		return 0, 0
+	}
+	return 4, 5
+}
+
+func asTuple(x int) (int, int) {
+	return x, x + 1
+}
+
+func take(t [2]int) {
+	if t[0] != 3 || t[1] != 4 {
+		panic(t)
+	}
+}
+
+type box struct{ n int }
+
+func (b box) pair() (int, int) {
+	return b.n, b.n + 1
+}
+
+type iface interface{ pair() (int, int) }
+
+func pairFn(x int) func() (int, int) {
+	return func() (int, int) { return x, x + 1 }
+}
+
+func main() {
+	a, b := pair(3)
+	if a != 3 || b != 4 {
+		panic(a)
+	}
+	_, b = pair(9)
+	if b != 10 {
+		panic(b)
+	}
+	x, y := fib(10)
+	if x != 21 || y != 68 {
+		panic(y)
+	}
+	unused()
+	a, b = rec()
+	if a != 4 || b != 5 {
+		panic(b)
+	}
+	u, v := asTuple(3)
+	take([2]int{u, v})
+	p, q := box{5}.pair()
+	if p != 5 || q != 6 {
+		panic(q)
+	}
+	var i iface = box{7}
+	p, q = i.pair()
+	if p != 7 || q != 8 {
+		panic(q)
+	}
+	r, s := pairFn(8)()
+	if r != 8 || s != 9 {
+		panic(s)
+	}
+}
+`
+	if _, err := ixgo.RunFile("main.go", src, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	ctx := ixgo.NewContext(0)
+	ctx.SetDebug(func(*ixgo.DebugInfo) {})
+	if _, err := ctx.RunFile("main.go", src, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNestedGenericTypeString(t *testing.T) {
 	src := `package main
 

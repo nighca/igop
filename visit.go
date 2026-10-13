@@ -366,8 +366,11 @@ func (visit *visitor) function(fn *ssa.Function) {
 					default:
 						ifn = func(fr *frame) {
 							ofn(fr)
-							r := fr.reg(ir).(tuple)
-							visit.intp.ctx.evalCallFn(visit.intp, call, r...)
+							// Elided calls leave ir unset; evalCallFn only
+							// records calls with no referrers, which are not elided.
+							if r, ok := fr.reg(ir).(tuple); ok {
+								visit.intp.ctx.evalCallFn(visit.intp, call, r...)
+							}
 						}
 					}
 				}
