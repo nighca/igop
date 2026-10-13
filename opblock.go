@@ -132,11 +132,14 @@ type function struct {
 	clearRanges []stackRange // slots cleared before pooling
 	localRefs   []register   // non-escaping locals holding references
 
-	hasGCRegs     bool                      // function has dynamic GC-relevant registers
-	hasRunDefers  bool                      // function SSA contains RunDefers
-	hasDeferStack bool                      // function emits ssa:deferstack
-	needInject    bool                      // yield pushed a Defer onto this function's deferstack
-	elidedExtract map[*ssa.Extract]struct{} // Extracts skipped after dests write
+	hasGCRegs      bool                      // function has dynamic GC-relevant registers
+	hasRunDefers   bool                      // function SSA contains RunDefers
+	hasDeferStack  bool                      // function emits ssa:deferstack
+	needInject     bool                      // yield pushed a Defer onto this function's deferstack
+	frameCacheSafe bool                      // no stack or local references need clearing
+	childFrameReg  register                  // first unused tuple slot for a returned child; -1 if absent
+	elidedTuples   []register                // tuple slots bypassed by direct Extract writes
+	elidedExtract  map[*ssa.Extract]struct{} // Extracts skipped after dests write
 }
 
 // closureCapture is one MakeClosure: its result register and captured
@@ -161,6 +164,7 @@ func (p *function) UnsafeRelease() {
 	p.closureCaptures = nil
 	p.closureByResult = nil
 	p.elidedExtract = nil
+	p.elidedTuples = nil
 	p.Instrs = nil
 	p.Recover = nil
 	p.Blocks = nil
@@ -172,7 +176,14 @@ func (p *function) UnsafeRelease() {
 }
 
 func (p *function) initPool() {
+	p.childFrameReg = -1
+	if len(p.elidedTuples) > 0 {
+		// One slot is shared by all eligible callees. allocFrameFromCaller
+		// checks spare.pfn, so a different callee falls back to the pool.
+		p.childFrameReg = p.elidedTuples[0]
+	}
 	p.planCleanup()
+	p.frameCacheSafe = len(p.clearRanges) == 0 && len(p.localRefs) == 0
 	p.pool = &sync.Pool{}
 	p.pool.New = func() interface{} {
 		fr := &frame{interp: p.Interp, pfn: p, block: p.Main}
@@ -233,6 +244,43 @@ func (p *function) deleteFrame(caller *frame, fr *frame) {
 	}
 }
 
+// Multi-result calls can reuse a child in an otherwise unwritten tuple slot.
+func (p *function) allocFrameFromCaller(caller *frame) *frame {
+	if atomic.LoadInt32(&p.cached) == 1 && caller.pfn != nil && caller.pfn.childFrameReg >= 0 {
+		reg := caller.pfn.childFrameReg
+		if spare, ok := caller.stack[reg].(*frame); ok && spare.pfn == p {
+			caller.stack[reg] = nil
+			spare.block = p.Main
+			spare.ipc, spare.pred = 0, 0
+			spare.caller = caller
+			spare.deferid = caller.deferid
+			caller.callee = spare
+			return spare
+		}
+	}
+	return p.allocFrame(caller)
+}
+
+func (p *function) deleteFrameToCaller(caller *frame, fr *frame) {
+	if !p.frameCacheSafe || caller.pfn == nil || caller.pfn.childFrameReg < 0 || caller.stack[caller.pfn.childFrameReg] != nil {
+		p.deleteFrame(caller, fr)
+		return
+	}
+	if caller.deferid != 0 {
+		p.Interp.trackDeferFrame(caller)
+	}
+	if caller.callee == fr {
+		caller.callee = nil
+	}
+	if atomic.LoadInt32(&p.cached) == 1 {
+		clear(fr.phiVals)
+		fr.caller, fr.callee = nil, nil
+		fr._defer, fr._panic = nil, nil
+		fr.deferid = 0
+		caller.stack[caller.pfn.childFrameReg] = fr
+	}
+}
+
 // planCleanup selects slots to clear and reusable locals to zero.
 // Templates are kept; callers copy results out before their slots are cleared.
 // Slots that cannot hold pointers are left dirty: the next call overwrites
@@ -269,6 +317,11 @@ func (p *function) planCleanup() {
 		if !typesMayRef(v.Type()) {
 			keep[reg] = true
 		}
+	}
+	for _, reg := range p.elidedTuples {
+		// Direct Extract writes bypass these tuple slots. The first slot may
+		// additionally hold a cleaned child frame; later slots remain empty.
+		keep[reg] = true
 	}
 	for i := 0; i < len(keep); {
 		if keep[i] {
@@ -1359,7 +1412,24 @@ func elideCallExtracts(pfn *function, instr ssa.Value, nres int) []register {
 			}
 		}
 	}
+	pfn.elidedTuples = append(pfn.elidedTuples, pfn.regIndex(instr))
 	return dests
+}
+
+func makeCallSpecializerInstr(interp *Interp, ifn *function, ia, dests []register) func(*frame) {
+	if len(dests) != ifn.nres {
+		return nil
+	}
+	for _, dest := range dests {
+		if dest < 0 {
+			return nil
+		}
+	}
+	factory := callSpecializers[callSpecializerShape{len(ia), len(dests)}]
+	if factory == nil {
+		return nil
+	}
+	return factory(interp, ifn, ia, dests)
 }
 
 func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.CallCommon) func(fr *frame) {
@@ -1374,6 +1444,9 @@ func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.Cal
 		ia = append(ia, ib...)
 		dests := elideCallExtracts(pfn, instr, ifn.nres)
 		if ifn.Recover == nil {
+			if run := makeCallSpecializerInstr(interp, ifn, ia, dests); run != nil {
+				return run
+			}
 			switch ifn.nres {
 			case 0:
 				return func(fr *frame) {
@@ -1430,6 +1503,9 @@ func makeCallInstr(pfn *function, interp *Interp, instr ssa.Value, call *ssa.Cal
 		ifn := interp.loadFunction(fn)
 		dests := elideCallExtracts(pfn, instr, ifn.nres)
 		if ifn.Recover == nil {
+			if run := makeCallSpecializerInstr(interp, ifn, ia, dests); run != nil {
+				return run
+			}
 			switch ifn.nres {
 			case 0:
 				return func(fr *frame) {

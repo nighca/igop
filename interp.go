@@ -994,13 +994,13 @@ func (i *Interp) callFunctionByStack1(caller *frame, pfn *function, ir register,
 }
 
 func (i *Interp) callFunctionByStackN(caller *frame, pfn *function, ir register, ia []register, dests []register) {
-	fr := pfn.allocFrame(caller)
+	fr := pfn.allocFrameFromCaller(caller)
 	for i := 0; i < len(ia); i++ {
 		fr.stack[i+pfn.nres] = caller.reg(ia[i])
 	}
 	fr.run()
 	copyCallResults(caller, fr, ir, dests)
-	pfn.deleteFrame(caller, fr)
+	pfn.deleteFrameToCaller(caller, fr)
 }
 
 func (i *Interp) callFunctionByStack(caller *frame, pfn *function, ir register, ia []register, dests []register) {
@@ -1041,7 +1041,7 @@ func (i *Interp) callFunctionByStackNoRecover1(caller *frame, pfn *function, ir 
 }
 
 func (i *Interp) callFunctionByStackNoRecoverN(caller *frame, pfn *function, ir register, ia []register, dests []register) {
-	fr := pfn.allocFrame(caller)
+	fr := pfn.allocFrameFromCaller(caller)
 	for i := 0; i < len(ia); i++ {
 		fr.stack[i+pfn.nres] = caller.reg(ia[i])
 	}
@@ -1051,7 +1051,7 @@ func (i *Interp) callFunctionByStackNoRecoverN(caller *frame, pfn *function, ir 
 		fn(fr)
 	}
 	copyCallResults(caller, fr, ir, dests)
-	pfn.deleteFrame(caller, fr)
+	pfn.deleteFrameToCaller(caller, fr)
 }
 
 func (i *Interp) callFunctionByStackWithEnv(caller *frame, pfn *function, ir register, ia []register, env []value, dests []register) {

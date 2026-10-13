@@ -57,7 +57,7 @@ func TestTupleAfterReuse(t *testing.T) {
 
 func TestTupleConcurrent(t *testing.T) {
 	interp := loadTuple(t)
-	runTuple(t, interp, "Pair", 0)
+	runTuple(t, interp, "PairCalls", 0)
 	const workers, calls = 4, 40
 	results := make([]Tuple, workers*calls)
 	var wg sync.WaitGroup
@@ -67,7 +67,7 @@ func TestTupleConcurrent(t *testing.T) {
 			defer wg.Done()
 			for n := 0; n < calls; n++ {
 				want := worker*calls + n
-				value, err := interp.RunFunc("Pair", want)
+				value, err := interp.RunFunc("PairCalls", want)
 				if err != nil {
 					t.Error(err)
 					return
@@ -78,8 +78,8 @@ func TestTupleConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 	for want, result := range results {
-		if len(result) != 2 || result[0] != want || result[1] != want+1 {
-			t.Fatalf("retained tuple = %v, want (%d, %d)", result, want, want+1)
+		if len(result) != 2 || result[0] != 2*want+1 || result[1] != 2*want+3 {
+			t.Fatalf("retained tuple = %v, want (%d, %d)", result, 2*want+1, 2*want+3)
 		}
 	}
 }
@@ -167,6 +167,117 @@ func TestFrameSkipNonRefClear(t *testing.T) {
 	}
 	if active.stack[argReg] != 22 {
 		t.Errorf("int arg slot cleared, got %v", active.stack[argReg])
+	}
+}
+
+func TestFrameReusesChild(t *testing.T) {
+	interp := loadTuple(t)
+	p := interp.funcs[interp.mainpkg.Func("Pair")]
+	first := p.Instrs[0]
+	var calls []*frame
+	p.Instrs[0] = func(fr *frame) {
+		calls = append(calls, fr)
+		fr.phiVals = []value{new(int)}
+		first(fr)
+	}
+	for n := 1; n <= 3; n++ {
+		calls = nil
+		if got := runTuple(t, interp, "PairCalls", n); !reflect.DeepEqual(got, Tuple{2*n + 1, 2*n + 3}) {
+			t.Fatalf("PairCalls(%d) = %v", n, got)
+		}
+		if len(calls) != 2 || calls[0] != calls[1] {
+			t.Fatal("successive calls did not reuse the returned child")
+		}
+		fr := calls[0]
+		if fr.caller != nil || fr.callee != nil || fr._defer != nil || fr._panic != nil || fr.deferid != 0 {
+			t.Fatal("cached child retained its call chain")
+		}
+		if fr.phiVals[0] != nil {
+			t.Fatal("cached child retained phi scratch")
+		}
+	}
+	calls = nil
+	if got := runTuple(t, interp, "MixedPairCalls", 7); !reflect.DeepEqual(got, Tuple{32, 44}) {
+		t.Fatalf("MixedPairCalls = %v; want [32 44]", got)
+	}
+	if len(calls) != 2 || calls[0] != calls[1] {
+		t.Fatal("calling another function lost the cached child")
+	}
+}
+
+func TestFrameElidedTupleCleanup(t *testing.T) {
+	interp := loadTuple(t)
+	callee := interp.funcs[interp.mainpkg.Func("RefPair")]
+	parent := interp.funcs[interp.mainpkg.Func("RefCalls")]
+	if callee.frameCacheSafe || parent.childFrameReg < 0 {
+		t.Fatal("fixture needs a reference-bearing child and an elided tuple")
+	}
+	var active, child *frame
+	firstParent, firstChild := parent.Instrs[0], callee.Instrs[0]
+	parent.Instrs[0] = func(fr *frame) { active = fr; firstParent(fr) }
+	callee.Instrs[0] = func(fr *frame) { child = fr; firstChild(fr) }
+	retained := runTuple(t, interp, "RefPair", 7)
+	for n := 1; n <= 3; n++ {
+		if got := runFrame(t, interp, "RefCalls", n); got != 4*n+4 {
+			t.Fatalf("RefCalls(%d) = %v", n, got)
+		}
+		for _, reg := range parent.elidedTuples {
+			if active.stack[reg] != nil {
+				t.Fatal("reference-bearing child retained in an elided tuple slot")
+			}
+		}
+		if child.stack[0] != nil || child.stack[1] != nil {
+			t.Fatal("returned child retained pointer results")
+		}
+	}
+	if *retained[0].(*int) != 7 || *retained[1].(*int) != 8 {
+		t.Fatal("retained results changed after frame reuse")
+	}
+}
+
+func TestPairCallShapes(t *testing.T) {
+	interp := loadTuple(t)
+	for _, tc := range []struct {
+		name string
+		want Tuple
+	}{
+		{"CapturedPair", Tuple{7, 8}},
+		{"CapturedArgPair", Tuple{14, 15}},
+		{"PartialPair", Tuple{7, 8}},
+	} {
+		for n := 0; n < 3; n++ {
+			if got := runTuple(t, interp, tc.name, 7); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("%s = %v; want %v", tc.name, got, tc.want)
+			}
+		}
+	}
+	for n := 0; n < 3; n++ {
+		if got := runFrame(t, interp, "DiscardPair", 7); got != 7 {
+			t.Fatalf("DiscardPair = %v; want 7", got)
+		}
+	}
+	for n := 0; n < 3; n++ {
+		if got := runTuple(t, interp, "TwoArgCalls", 7); !reflect.DeepEqual(got, Tuple{14, 16}) {
+			t.Fatalf("TwoArgCalls = %v; want [14 16]", got)
+		}
+	}
+}
+
+func TestCallSpecializerRegistry(t *testing.T) {
+	shape := callSpecializerShape{2, 2}
+	original := callSpecializers[shape]
+	called := false
+	registerCallSpecializer(shape, func(interp *Interp, fn *function, args, dests []register) func(*frame) {
+		called = true
+		return original(interp, fn, args, dests)
+	})
+	defer registerCallSpecializer(shape, original)
+	interp := loadTuple(t)
+	if got := runTuple(t, interp, "TwoArgCalls", 7); !reflect.DeepEqual(got, Tuple{14, 16}) {
+		t.Fatalf("TwoArgCalls = %v; want [14 16]", got)
+	}
+	if !called {
+		t.Fatal("registered call specializer was not used")
 	}
 }
 
@@ -301,6 +412,45 @@ func runFrame(t testing.TB, interp *Interp, name string, args ...interface{}) in
 
 const tupleSource = `package main
 func Pair(n int) (int, int) { return n, n + 1 }
+func TwoArgPair(a, b int) (int, int) { return a + b, a - b }
+func PairCalls(n int) (int, int) {
+	a, b := Pair(n)
+	c, d := Pair(n + 1)
+	return a + c, b + d
+}
+func TwoArgCalls(n int) (int, int) {
+	a, b := TwoArgPair(n, n + 1)
+	return TwoArgPair(a, b)
+}
+func DifferentPair(n int) (int, int) { return n + 10, n + 20 }
+func MixedPairCalls(n int) (int, int) {
+	a, b := Pair(n)
+	c, d := DifferentPair(n)
+	e, f := Pair(n + 1)
+	return a + c + e, b + d + f
+}
+func RefPair(n int) (*int, *int) {
+	a, b := new(int), new(int)
+	*a, *b = n, n + 1
+	return a, b
+}
+func RefCalls(n int) int {
+	a, b := RefPair(n)
+	c, d := RefPair(n + 1)
+	return *a + *b + *c + *d
+}
+func CapturedPair(n int) (int, int) {
+	return func() (int, int) { return n, n + 1 }()
+}
+func CapturedArgPair(n int) (int, int) {
+	return func(x int) (int, int) { return n + x, n + x + 1 }(n)
+}
+func PartialPair(n int) (int, int) {
+	a, _ := Pair(n)
+	_, b := Pair(n)
+	return a, b
+}
+func DiscardPair(n int) int { RefPair(n); return n }
 func Recursive(n int) (int, int) {
 	if n <= 10 { return n, n + 1 }
 	a, b := Recursive(n - 10)
