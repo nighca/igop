@@ -102,6 +102,9 @@ func TestGenerateDirectCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(append(testRegistryEntries(output), testAdapterDeclarations(output)...), "\n")
+	// go/types may render the unaliased predeclared any type as interface{}.
+	// Accept that equivalent spelling while checking the complete adapter text.
+	got = strings.ReplaceAll(got, "ixgo.DirectCallArg[interface{}](", "ixgo.DirectCallArg[any](")
 	want := `"Add": func_Add
 "(*List).Append": method_ptr_List_Append
 func func_Add(ctx ixgo.DirectCallContext) {
