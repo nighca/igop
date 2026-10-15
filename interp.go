@@ -906,6 +906,12 @@ func (i *Interp) callDiscardsResult(caller *frame, fn value, args []value, ssaAr
 
 // Callback entries restore context even when panic skips deleteFrame.
 func (i *Interp) callFunction(caller *frame, pfn *function, args []value, env []value) (result value) {
+	if i.ctx.executionEnterFunc != nil {
+		i.ctx.executionEnterFunc()
+	}
+	if i.ctx.executionLeaveFunc != nil {
+		defer i.ctx.executionLeaveFunc()
+	}
 	if caller.deferid != 0 {
 		defer i.trackDeferFrame(caller)
 	}
@@ -932,6 +938,12 @@ func (i *Interp) callFunction(caller *frame, pfn *function, args []value, env []
 }
 
 func (i *Interp) callFunctionByReflect(caller *frame, pfn *function, typ reflect.Type, args []reflect.Value, env []value) (results []reflect.Value) {
+	if i.ctx.executionEnterFunc != nil {
+		i.ctx.executionEnterFunc()
+	}
+	if i.ctx.executionLeaveFunc != nil {
+		defer i.ctx.executionLeaveFunc()
+	}
 	if caller.deferid != 0 {
 		defer i.trackDeferFrame(caller)
 	}
@@ -959,6 +971,12 @@ func (i *Interp) callFunctionByReflect(caller *frame, pfn *function, typ reflect
 }
 
 func (i *Interp) callFunctionDiscardsResult(caller *frame, pfn *function, args []value, env []value) {
+	if i.ctx.executionEnterFunc != nil {
+		i.ctx.executionEnterFunc()
+	}
+	if i.ctx.executionLeaveFunc != nil {
+		defer i.ctx.executionLeaveFunc()
+	}
 	if caller.deferid != 0 {
 		defer i.trackDeferFrame(caller)
 	}

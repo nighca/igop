@@ -436,6 +436,12 @@ func (r *Repl) runFuncEx(i *Interp, pkg *ssa.Package, fnname string, fs *fnState
 	if fn == nil {
 		return nil, fmt.Errorf("no function %v", fnname)
 	}
+	if i.ctx.executionEnterFunc != nil {
+		i.ctx.executionEnterFunc()
+	}
+	if i.ctx.executionLeaveFunc != nil {
+		defer i.ctx.executionLeaveFunc()
+	}
 	pfn := i.funcs[fn]
 	fr := pfn.allocFrame(&frame{})
 	if fs != nil {
