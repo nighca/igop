@@ -436,6 +436,11 @@ func (r *Repl) runFuncEx(i *Interp, pkg *ssa.Package, fnname string, fs *fnState
 	if fn == nil {
 		return nil, fmt.Errorf("no function %v", fnname)
 	}
+	if i.ctx.executionEndFunc != nil {
+		id := goroutineID()
+		i.enterExecution(id)
+		defer i.leaveExecution(id)
+	}
 	pfn := i.funcs[fn]
 	fr := pfn.allocFrame(&frame{})
 	if fs != nil {

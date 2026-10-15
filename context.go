@@ -84,29 +84,30 @@ type MethodChecker func(ctx *Context, prog *ssa.Program) func(typ reflect.Type, 
 
 // Context ssa context
 type Context struct {
-	Loader        Loader                                                   // types loader
-	BuildContext  build.Context                                            // build context, default build.Default
-	RunContext    context.Context                                          // run context, default unset
-	Importer      types.Importer                                           // importer
-	output        io.Writer                                                // capture print/println output
-	FileSet       *token.FileSet                                           // file set
-	sizes         types.Sizes                                              // types unsafe sizes
-	Lookup        func(root, path string) (dir string, found bool)         // lookup external import
-	evalCallFn    func(interp *Interp, call *ssa.Call, res ...interface{}) // internal eval func for repl
-	debugFunc     func(*DebugInfo)                                         // debug func
-	panicFunc     func(*PanicInfo)                                         // panic func
-	pkgs          map[string]*SourcePackage                                // imports
-	override      sync.Map                                                 // map[string]reflect.Value, override function
-	evalInit      map[string]bool                                          // eval init check
-	nestedMap     map[*types.Named]int                                     // nested named index
-	rootp         atomic.Pointer[string]                                   // project root
-	callForPool   int                                                      // least call count for enable function pool
-	Mode          Mode                                                     // mode
-	BuilderMode   ssa.BuilderMode                                          // ssa builder mode
-	Builder       *SSABuilder                                              // ssa builder
-	evalMode      bool                                                     // eval mode
-	loadPkgMu     sync.Mutex                                               // load pkg mutex
-	MethodChecker MethodChecker                                            // method checker
+	Loader           Loader                                                   // types loader
+	BuildContext     build.Context                                            // build context, default build.Default
+	RunContext       context.Context                                          // run context, default unset
+	Importer         types.Importer                                           // importer
+	output           io.Writer                                                // capture print/println output
+	FileSet          *token.FileSet                                           // file set
+	sizes            types.Sizes                                              // types unsafe sizes
+	Lookup           func(root, path string) (dir string, found bool)         // lookup external import
+	evalCallFn       func(interp *Interp, call *ssa.Call, res ...interface{}) // internal eval func for repl
+	executionEndFunc func()                                                   // outermost interpreted invocation completed
+	debugFunc        func(*DebugInfo)                                         // debug func
+	panicFunc        func(*PanicInfo)                                         // panic func
+	pkgs             map[string]*SourcePackage                                // imports
+	override         sync.Map                                                 // map[string]reflect.Value, override function
+	evalInit         map[string]bool                                          // eval init check
+	nestedMap        map[*types.Named]int                                     // nested named index
+	rootp            atomic.Pointer[string]                                   // project root
+	callForPool      int                                                      // least call count for enable function pool
+	Mode             Mode                                                     // mode
+	BuilderMode      ssa.BuilderMode                                          // ssa builder mode
+	Builder          *SSABuilder                                              // ssa builder
+	evalMode         bool                                                     // eval mode
+	loadPkgMu        sync.Mutex                                               // load pkg mutex
+	MethodChecker    MethodChecker                                            // method checker
 }
 
 func (ctx *Context) setRoot(root string) {
@@ -264,6 +265,13 @@ func (ctx *Context) SetDebug(fn func(*DebugInfo)) {
 	if ctx.Builder != nil {
 		ctx.Builder.Reset()
 	}
+}
+
+// SetExecutionEnd sets the callback for completion of the outermost interpreted
+// invocation on each goroutine, including unwinding due to panic. The callback
+// runs synchronously on that goroutine. Configure it before executing code.
+func (ctx *Context) SetExecutionEnd(fn func()) {
+	ctx.executionEndFunc = fn
 }
 
 func (ctx *Context) SetPanic(fn func(*PanicInfo)) {

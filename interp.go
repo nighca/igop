@@ -80,27 +80,29 @@ func init() {
 }
 
 type Interp struct {
-	ctx          *Context
-	rctx         *reflectx.Context
-	mainpkg      *ssa.Package                                // the SSA main package
-	record       *TypesRecord                                // lookup type and ToType
-	globals      map[string]value                            // addresses of global variables (immutable)
-	chkinit      map[string]bool                             // init vars
-	preloadTypes map[types.Type]reflect.Type                 // preload types.Type -> reflect.Type
-	funcs        map[*ssa.Function]*function                 // ssa.Function -> *function
-	msets        map[reflect.Type](map[string]*ssa.Function) // user defined type method sets
-	chexit       chan int                                    // call os.Exit code by chan for runtime.Goexit
-	cherror      chan PanicError                             // call by go func error for context
-	deferMap     sync.Map                                    // defer goroutine id -> call frame
-	rfuncMap     sync.Map                                    // reflect.Value(fn).Pointer -> *function
-	typesMutex   sync.RWMutex                                // findType/toType mutex
-	mainid       uint64                                      // main goroutine id
-	exitCode     int                                         // call os.Exit code
-	goroutines   int32                                       // atomically updated
-	deferCount   int32                                       // fast has defer check
-	goexited     int32                                       // is call runtime.Goexit
-	exited       int32                                       // is call os.Exit
-	gcEnabled    bool                                        // program can invoke runtime.GC
+	ctx            *Context
+	rctx           *reflectx.Context
+	mainpkg        *ssa.Package                                // the SSA main package
+	record         *TypesRecord                                // lookup type and ToType
+	globals        map[string]value                            // addresses of global variables (immutable)
+	chkinit        map[string]bool                             // init vars
+	preloadTypes   map[types.Type]reflect.Type                 // preload types.Type -> reflect.Type
+	funcs          map[*ssa.Function]*function                 // ssa.Function -> *function
+	msets          map[reflect.Type](map[string]*ssa.Function) // user defined type method sets
+	chexit         chan int                                    // call os.Exit code by chan for runtime.Goexit
+	cherror        chan PanicError                             // call by go func error for context
+	deferMap       sync.Map                                    // defer goroutine id -> call frame
+	rfuncMap       sync.Map                                    // reflect.Value(fn).Pointer -> *function
+	executionMu    sync.Mutex
+	executionDepth map[uint64]int
+	typesMutex     sync.RWMutex // findType/toType mutex
+	mainid         uint64       // main goroutine id
+	exitCode       int          // call os.Exit code
+	goroutines     int32        // atomically updated
+	deferCount     int32        // fast has defer check
+	goexited       int32        // is call runtime.Goexit
+	exited         int32        // is call os.Exit
+	gcEnabled      bool         // program can invoke runtime.GC
 	interpExt
 }
 
@@ -904,8 +906,36 @@ func (i *Interp) callDiscardsResult(caller *frame, fn value, args []value, ssaAr
 	}
 }
 
+func (i *Interp) enterExecution(id uint64) {
+	i.executionMu.Lock()
+	defer i.executionMu.Unlock()
+	if i.executionDepth == nil {
+		i.executionDepth = make(map[uint64]int)
+	}
+	i.executionDepth[id]++
+}
+
+func (i *Interp) leaveExecution(id uint64) {
+	i.executionMu.Lock()
+	depth := i.executionDepth[id] - 1
+	if depth == 0 {
+		delete(i.executionDepth, id)
+	} else {
+		i.executionDepth[id] = depth
+	}
+	i.executionMu.Unlock()
+	if depth == 0 {
+		i.ctx.executionEndFunc()
+	}
+}
+
 // Callback entries restore context even when panic skips deleteFrame.
 func (i *Interp) callFunction(caller *frame, pfn *function, args []value, env []value) (result value) {
+	if i.ctx.executionEndFunc != nil {
+		id := goroutineID()
+		i.enterExecution(id)
+		defer i.leaveExecution(id)
+	}
 	if caller.deferid != 0 {
 		defer i.trackDeferFrame(caller)
 	}
@@ -932,6 +962,11 @@ func (i *Interp) callFunction(caller *frame, pfn *function, args []value, env []
 }
 
 func (i *Interp) callFunctionByReflect(caller *frame, pfn *function, typ reflect.Type, args []reflect.Value, env []value) (results []reflect.Value) {
+	if i.ctx.executionEndFunc != nil {
+		id := goroutineID()
+		i.enterExecution(id)
+		defer i.leaveExecution(id)
+	}
 	if caller.deferid != 0 {
 		defer i.trackDeferFrame(caller)
 	}
@@ -959,6 +994,11 @@ func (i *Interp) callFunctionByReflect(caller *frame, pfn *function, typ reflect
 }
 
 func (i *Interp) callFunctionDiscardsResult(caller *frame, pfn *function, args []value, env []value) {
+	if i.ctx.executionEndFunc != nil {
+		id := goroutineID()
+		i.enterExecution(id)
+		defer i.leaveExecution(id)
+	}
 	if caller.deferid != 0 {
 		defer i.trackDeferFrame(caller)
 	}
